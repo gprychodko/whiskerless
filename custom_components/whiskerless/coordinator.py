@@ -61,7 +61,6 @@ from whiskerless.devices.litter_robot_4.protocol import (
 )
 
 from .const import (
-from .restore_compat import stored_state
     CONF_CAT_VISIT_SEEN,
     CONF_DERIVED,
     CONF_DRAWER_SEEN,
@@ -83,6 +82,7 @@ from .restore_compat import stored_state
     SIGNAL_CAT_VISIT,
     SIGNAL_CLEAN_CYCLE,
 )
+from .restore_compat import stored_state
 
 #: Which config-entry option records each capability's first sighting. The
 #: library decides what counts as proof; Home Assistant decides where it is kept.
