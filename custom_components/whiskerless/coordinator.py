@@ -61,6 +61,7 @@ from whiskerless.devices.litter_robot_4.protocol import (
 )
 
 from .const import (
+from .restore_compat import stored_state
     CONF_CAT_VISIT_SEEN,
     CONF_DERIVED,
     CONF_DRAWER_SEEN,
