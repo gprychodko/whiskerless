@@ -24,7 +24,6 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers import restore_state
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -225,7 +224,7 @@ class WhiskerlessCoordinator(DataUpdateCoordinator[WhiskerlessData]):
         entity_id = registry.async_get_entity_id(
             Platform.BINARY_SENSOR, DOMAIN, f"{self.serial}_{key}"
         )
-        stored = restore_state.async_get(self.hass).last_states.get(entity_id) if entity_id else None
+        stored = stored_state(self.hass, entity_id)
         if stored is None or stored.state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
             return None
         return stored.state.state == STATE_ON
