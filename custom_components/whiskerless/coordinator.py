@@ -389,7 +389,20 @@ class WhiskerlessCoordinator(DataUpdateCoordinator[WhiskerlessData]):
                 # Before the reducer, which is deliberately blind to our own
                 # traffic: the echo is transport, not a fact about the robot.
                 self._watch_press_echo(parsed)
-            update = derive.apply_message(self._derived, parsed, dt_util.utcnow())
+            now = dt_util.utcnow()
+            closed_by_frame: list[VisitEnded] = []
+            if isinstance(parsed, ActivityMessage) and self._derived.visit_started_at is not None:
+                # Close an open visit on the robot's own end-of-visit frame (0xBC)
+                # instead of waiting for the next state document: documents come
+                # minutes apart and the weight (0x09) lands in the same second as
+                # this frame, so document-only closing lost weighed visits
+                # (hub fork, 2026-11-06). The reducer then sees no open visit.
+                if any(r.register == lr4.Register.CAT_VISIT_DURATION for r in parsed.readings):
+                    closed_by_frame.append(
+                        VisitEnded(started=self._derived.visit_started_at, ended=now)
+                    )
+                    self._derived.visit_started_at = None
+            update = derive.apply_message(self._derived, parsed, now)
             self._derived = update.state
             self._apply_effects(update.effects)
             if isinstance(parsed, StateMessage):
@@ -403,14 +416,21 @@ class WhiskerlessCoordinator(DataUpdateCoordinator[WhiskerlessData]):
                         async_dispatcher_send(
                             self.hass, SIGNAL_CLEAN_CYCLE.format(self.serial), effect
                         )
-                    elif isinstance(effect, VisitEnded):
-                        task = self.hass.async_create_task(self._announce_visit(effect))
-                        self._tasks.add(task)
-                        task.add_done_callback(self._tasks.discard)
             else:
                 if update.changed and self._robot is not None:
                     self.async_set_updated_data(self._build_data(self._robot))
                 self._schedule_activity_refresh()
+            # A visit can close from a state document OR from the robot's own
+            # end-of-visit frame (0xBC); announce it either way. The announce
+            # task is deliberately NOT tracked in self._tasks: a capability
+            # sighting in the same message reloads the entry, and async_shutdown
+            # cancelling the announcement is exactly how the first weighed visit
+            # on a robot used to vanish (hub fork, 2026-11-06).
+            for effect in (*closed_by_frame, *update.effects):
+                if isinstance(effect, VisitEnded):
+                    self.hass.async_create_task(
+                        self._announce_visit(effect, self._derived)
+                    )
         except Exception:  # noqa: BLE001 — a bad message must never break the subscription
             LOGGER.exception("Error handling MQTT message for %s", self.serial)
 
@@ -439,18 +459,25 @@ class WhiskerlessCoordinator(DataUpdateCoordinator[WhiskerlessData]):
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def _announce_visit(self, visit: VisitEnded) -> None:
+    async def _announce_visit(self, visit: VisitEnded, derived_at_close: derive.DerivedState) -> None:
         """Announce a finished visit once its weight has had time to arrive.
 
         The weight lands a few seconds AFTER the robot's sensors clear, so firing
-        at the end itself would report almost every visit as unweighed.
+        at the end itself would report almost every visit as unweighed. Reads the
+        live derived state when it can (a weight that arrived during the grace),
+        falling back to the state captured at close if this coordinator was
+        shut down by a reload in the meantime.
         """
         await asyncio.sleep(derive.VISIT_WEIGHT_GRACE.total_seconds())
+        derived = self._derived if self._derived is not None else derived_at_close
+        weight = derive.visit_weight(derived, visit)
+        if weight is None:
+            weight = derive.visit_weight(derived_at_close, visit)
         async_dispatcher_send(
             self.hass,
             SIGNAL_CAT_VISIT.format(self.serial),
             visit,
-            derive.visit_weight(self._derived, visit),
+            weight,
         )
 
     async def _safe_request_state(self) -> None:
